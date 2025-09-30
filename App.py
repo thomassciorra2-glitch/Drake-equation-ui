@@ -1,0 +1,166 @@
+import streamlit as st
+import numpy as np
+import math
+from scipy.integrate import cumtrapz, odeint
+import pandas as pd
+import plotly.express as px
+from io import BytesIO
+
+# Try Torch, fallback to NumPy for MLP
+try:
+    import torch
+    import torch.nn as nn
+    TORCH_AVAILABLE = True
+except ImportError:
+    TORCH_AVAILABLE = False
+    print("Torch not available—using NumPy MLP fallback.")
+
+# App Title
+st.set_page_config(page_title="Extended Drake UI", layout="wide", initial_sidebar_state="expanded")
+st.title("🪐 Extended Drake–Information Equation Navigator")
+st.markdown("Interactive MC sweeps for N(t_0). Adjust params, run, explore N(z).")
+
+# Sidebar: Params & Controls
+st.sidebar.header("Parameters")
+z_max = st.sidebar.slider("z_max", 0.5, 3.0, 2.0, 0.1)
+epsilon_waste = st.sidebar.slider("ε_waste (fused prior)", 0.01, 0.5, 0.05, 0.01)
+k_max = st.sidebar.slider("K_max", 0.8, 2.0, 1.1, 0.1)
+sfr_base = st.sidebar.selectbox("SFR Base", ["Lognormal + Rising Hybrid", "MD14 Double Power-Law"])
+n_samples = st.sidebar.slider("MC Samples", 100, 1000, 500, 100)
+run_button = st.sidebar.button("Run Sweep")
+
+# Chat Input
+chat_prompt = st.sidebar.text_input("Chat Query (e.g., 'sweep z=1.5')")
+
+# Cosmology Fallback
+H0 = 70.0 * 1000.0 / 3.085677581e22
+Om0, Ol0 = 0.3, 0.7
+c = 299792458.0
+
+def Ez(z): return math.sqrt(Om0*(1+z)**3 + Ol0)
+def dc_comoving(z, steps=1024):
+    zgrid = np.linspace(0.0, z, steps)
+    integrand = 1.0 / np.array([Ez(zz) for zz in zgrid])
+    return (c / H0) * np.trapz(integrand, zgrid)
+def dL(z): return (1+z) * dc_comoving(z)
+
+# Hard-Steps Bio
+def B_hardsteps(t_star, r0=0.1, tau=0.05, alpha=2):
+    try:
+        if np.isscalar(t_star):
+            t_star = np.array([t_star])
+        t_grid = np.linspace(0, t_star.max(), 100)
+        lambda_chem = r0 * t_grid / (1 + (t_grid / tau)**alpha)
+        integral = cumtrapz(lambda_chem, t_grid, initial=0)
+        B_interp = np.interp(t_star, t_grid, integral)
+        B = 1 - np.exp(-B_interp)
+        return B.mean() if len(B) > 1 else B[0]
+    except Exception as e:
+        st.error(f"B_hardsteps error: {e}")
+        return 0.99  # Fallback mean
+
+# Birth-Death Cultural
+def C_birthdeath(t_star, b=0.05, d=0.03, K_cap=1e16):
+    try:
+        if np.isscalar(t_star):
+            t_star = np.array([t_star])
+        def ode(y, t):
+            return b * y - d * y**2 / K_cap
+        y0 = 1.0
+        sol = odeint(ode, y0, t_star)
+        return sol[:, 0].mean() / K_cap
+    except Exception as e:
+        st.error(f"C_birthdeath error: {e}")
+        return 0.37  # Fallback mean
+
+# NumPy MLP Fallback (if no Torch)
+def numpy_mlp(z):
+    # Simple 1-layer sigmoid approx
+    x = np.array([z])
+    h = 1 / (1 + np.exp(- (x - 0.5)))  # Toy hidden
+    out = 1 / (1 + np.exp(-h))  # Sigmoid output
+    return out[0]
+
+# SFR Bases
+def md14_sfr(z, phi0=0.01, alpha_low=-0.3, alpha_high=-3.5, beta=1.5):
+    try:
+        return phi0 * (1 + z)**alpha_low / ((1 + z)**alpha_low + (1 + z)**alpha_high)**beta
+    except:
+        return 0.01 * np.exp(-z / 1.5)  # Fallback
+
+def lognormal_rising_sfr(z, phi0=0.01, mu=0.64, sigma=0.5, gamma=0.5, z0=1.5):
+    try:
+        if z == 0:
+            z = 1e-6
+        lognorm = phi0 / (z * sigma * np.sqrt(2 * np.pi)) * np.exp( - (np.log(z) - mu)**2 / (2 * sigma**2) )
+        rising = (1 + z)**gamma * np.exp(-z / z0)
+        return lognorm * rising
+    except:
+        return 0.01 * np.exp(-z / 1.5)  # Fallback
+
+def psi_z(z, sfr_type='Lognormal + Rising Hybrid'):
+    try:
+        if TORCH_AVAILABLE:
+            z_torch = torch.tensor(np.array([z]).reshape(-1, 1), dtype=torch.float32)
+            uplift = sfr_mlp(z_torch).detach().numpy().flatten()[0]
+        else:
+            uplift = numpy_mlp(z)
+        uplift_factor = 1.0 + 0.5 * uplift  # [1.0, 1.5]
+        if sfr_type == 'MD14 Double Power-Law':
+            base = md14_sfr(z)
+        else:
+            base = lognormal_rising_sfr(z)
+        return base * uplift_factor
+    except Exception as e:
+        st.error(f"psi_z error: {e}")
+        return 0.01 * np.exp(-z / 1.5)  # Fallback
+
+# Full MC Function
+@st.cache_data
+def drake_mc(z_max, n_samples, epsilon_waste, k_max, sfr_base):
+    try:
+        z_bins = np.linspace(0.05, z_max, 20)
+        n_z = np.zeros(len(z_bins))
+        K_cap = 10**(10 * k_max + 6)  # P_tot proxy
+        for i, z in enumerate(z_bins):
+            t_star = 10.0 - z * 8.0  # Toy Gyr lookback
+            psi = psi_z(z, sfr_base) * n_samples
+            B = B_hardsteps(t_star)
+            C = C_birthdeath(t_star, K_cap=K_cap)
+            p_det = epsilon_waste / (1 + z)**4 * np.random.uniform(0.01, 0.1, n_samples).mean()
+            n_z[i] = psi * B * C * p_det
+        total_n = np.sum(n_z)
+        df = pd.DataFrame({'z': z_bins, 'N_z': n_z, 'Total N': total_n})
+        return df, total_n
+    except Exception as e:
+        st.error(f"MC error: {e}")
+        return pd.DataFrame(), 0.0
+
+# Main App Logic
+if run_button or chat_prompt:
+    if chat_prompt:
+        try:
+            z_max = float(chat_prompt.split('z=')[1].split()[0]) if 'z=' in chat_prompt else z_max
+        except:
+            pass
+    df, total_n = drake_mc(z_max, n_samples, epsilon_waste, k_max, sfr_base)
+    
+    if total_n > 0:
+        # Display Table
+        st.subheader(f"Results: N(z) for z_max={z_max}")
+        st.dataframe(df, use_container_width=True)
+        
+        # Plot
+        fig = px.line(df, x='z', y='N_z', log_y=True, title=f'log N(z) - Total N = {total_n:.2e}')
+        st.plotly_chart(fig, use_container_width=True)
+        
+        # CSV Download
+        csv_buffer = BytesIO()
+        df.to_csv(csv_buffer, index=False)
+        st.download_button("Download CSV", csv_buffer.getvalue(), "n_z_results.csv", "text/csv")
+    else:
+        st.error("Run failed—check params.")
+
+# Footer
+st.markdown("---")
+st.caption("Prototype for EDIE v9. Open-source under MIT. Run sweeps, explore data.")
