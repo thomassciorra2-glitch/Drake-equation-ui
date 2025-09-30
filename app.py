@@ -2,8 +2,6 @@ import streamlit as st
 import numpy as np
 import math
 from scipy.integrate import cumtrapz, odeint
-import torch
-import torch.nn as nn
 import pandas as pd
 import plotly.express as px
 from io import BytesIO
@@ -58,21 +56,12 @@ def C_birthdeath(t_star, b=0.05, d=0.03, K_cap=1e16):
     sol = odeint(ode, y0, t_star)
     return sol[:, 0].mean() / K_cap
 
-# MLP SFR Fusion
-class SFR_MLP(nn.Module):
-    def __init__(self):
-        super().__init__()
-        self.fc1 = nn.Linear(1, 10)
-        self.fc2 = nn.Linear(10, 1)
-        self.relu = nn.ReLU()
-    
-    def forward(self, x):
-        x = self.relu(self.fc1(x))
-        return torch.sigmoid(self.fc2(x))
-
-sfr_mlp = SFR_MLP()
-with torch.no_grad():
-    sfr_mlp.fc2.weight.fill_(0.5)  # Toy
+# NumPy MLP Fallback
+def numpy_mlp(z):
+    x = np.array([z])
+    h = 1 / (1 + np.exp(- (x - 0.5) * 10))
+    out = 1 / (1 + np.exp(-h * 10))
+    return out[0]
 
 # SFR Bases
 def md14_sfr(z, phi0=0.01, alpha_low=-0.3, alpha_high=-3.5, beta=1.5):
@@ -86,8 +75,7 @@ def lognormal_rising_sfr(z, phi0=0.01, mu=0.64, sigma=0.5, gamma=0.5, z0=1.5):
     return lognorm * rising
 
 def psi_z(z, sfr_type='Lognormal + Rising Hybrid'):
-    z_torch = torch.tensor(np.array([z]).reshape(-1, 1), dtype=torch.float32)
-    uplift = sfr_mlp(z_torch).detach().numpy().flatten()[0]
+    uplift = numpy_mlp(z)
     uplift_factor = 1.0 + 0.5 * uplift  # [1.0, 1.5]
     if sfr_type == 'MD14 Double Power-Law':
         base = md14_sfr(z)
@@ -100,9 +88,9 @@ def psi_z(z, sfr_type='Lognormal + Rising Hybrid'):
 def drake_mc(z_max, n_samples, epsilon_waste, k_max, sfr_base):
     z_bins = np.linspace(0.05, z_max, 20)
     n_z = np.zeros(len(z_bins))
-    K_cap = 10**(10 * k_max + 6)  # P_tot proxy
+    K_cap = 10**(10 * k_max + 6)
     for i, z in enumerate(z_bins):
-        t_star = 10.0 - z * 8.0  # Toy Gyr lookback
+        t_star = 10.0 - z * 8.0
         psi = psi_z(z, sfr_base) * n_samples
         B = B_hardsteps(t_star)
         C = C_birthdeath(t_star, K_cap=K_cap)
@@ -115,25 +103,24 @@ def drake_mc(z_max, n_samples, epsilon_waste, k_max, sfr_base):
 # Main App Logic
 if run_button or chat_prompt:
     if chat_prompt:
-        # Parse chat (simple: extract z_max if mentioned)
         try:
             z_max = float(chat_prompt.split('z=')[1].split()[0]) if 'z=' in chat_prompt else z_max
         except:
             pass
     df, total_n = drake_mc(z_max, n_samples, epsilon_waste, k_max, sfr_base)
     
-    # Display Table
-    st.subheader(f"Results: N(z) for z_max={z_max}")
-    st.dataframe(df, use_container_width=True)
-    
-    # Plot
-    fig = px.line(df, x='z', y='N_z', log_y=True, title=f'log N(z) - Total N = {total_n:.2e}')
-    st.plotly_chart(fig, use_container_width=True)
-    
-    # CSV Download
-    csv_buffer = BytesIO()
-    df.to_csv(csv_buffer, index=False)
-    st.download_button("Download CSV", csv_buffer.getvalue(), "n_z_results.csv", "text/csv")
+    if total_n > 0:
+        st.subheader(f"Results: N(z) for z_max={z_max}")
+        st.dataframe(df, use_container_width=True)
+        
+        fig = px.line(df, x='z', y='N_z', log_y=True, title=f'log N(z) - Total N = {total_n:.2e}')
+        st.plotly_chart(fig, use_container_width=True)
+        
+        csv_buffer = BytesIO()
+        df.to_csv(csv_buffer, index=False)
+        st.download_button("Download CSV", csv_buffer.getvalue(), "n_z_results.csv", "text/csv")
+    else:
+        st.error("Run failed—check params.")
 
 # Footer
 st.markdown("---")
