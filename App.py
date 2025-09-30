@@ -6,15 +6,6 @@ import pandas as pd
 import plotly.express as px
 from io import BytesIO
 
-# Try Torch, fallback to NumPy for MLP
-try:
-    import torch
-    import torch.nn as nn
-    TORCH_AVAILABLE = True
-except ImportError:
-    TORCH_AVAILABLE = False
-    print("Torch not available—using NumPy MLP fallback.")
-
 # App Title
 st.set_page_config(page_title="Extended Drake UI", layout="wide", initial_sidebar_state="expanded")
 st.title("🪐 Extended Drake–Information Equation Navigator")
@@ -46,95 +37,69 @@ def dL(z): return (1+z) * dc_comoving(z)
 
 # Hard-Steps Bio
 def B_hardsteps(t_star, r0=0.1, tau=0.05, alpha=2):
-    try:
-        if np.isscalar(t_star):
-            t_star = np.array([t_star])
-        t_grid = np.linspace(0, t_star.max(), 100)
-        lambda_chem = r0 * t_grid / (1 + (t_grid / tau)**alpha)
-        integral = cumtrapz(lambda_chem, t_grid, initial=0)
-        B_interp = np.interp(t_star, t_grid, integral)
-        B = 1 - np.exp(-B_interp)
-        return B.mean() if len(B) > 1 else B[0]
-    except Exception as e:
-        st.error(f"B_hardsteps error: {e}")
-        return 0.99  # Fallback mean
+    if np.isscalar(t_star):
+        t_star = np.array([t_star])
+    t_grid = np.linspace(0, t_star.max(), 100)
+    lambda_chem = r0 * t_grid / (1 + (t_grid / tau)**alpha)
+    integral = cumtrapz(lambda_chem, t_grid, initial=0)
+    B_interp = np.interp(t_star, t_grid, integral)
+    B = 1 - np.exp(-B_interp)
+    return B.mean() if len(B) > 1 else B[0]
 
 # Birth-Death Cultural
 def C_birthdeath(t_star, b=0.05, d=0.03, K_cap=1e16):
-    try:
-        if np.isscalar(t_star):
-            t_star = np.array([t_star])
-        def ode(y, t):
-            return b * y - d * y**2 / K_cap
-        y0 = 1.0
-        sol = odeint(ode, y0, t_star)
-        return sol[:, 0].mean() / K_cap
-    except Exception as e:
-        st.error(f"C_birthdeath error: {e}")
-        return 0.37  # Fallback mean
+    if np.isscalar(t_star):
+        t_star = np.array([t_star])
+    def ode(y, t):
+        return b * y - d * y**2 / K_cap
+    y0 = 1.0
+    sol = odeint(ode, y0, t_star)
+    return sol[:, 0].mean() / K_cap
 
-# NumPy MLP Fallback (if no Torch)
+# NumPy MLP Fallback (No Torch)
 def numpy_mlp(z):
-    # Simple 1-layer sigmoid approx
+    # Simple 1-layer sigmoid approx for uplift [0,1]
     x = np.array([z])
-    h = 1 / (1 + np.exp(- (x - 0.5)))  # Toy hidden
-    out = 1 / (1 + np.exp(-h))  # Sigmoid output
+    h = 1 / (1 + np.exp(- (x - 0.5) * 10))  # Toy hidden
+    out = 1 / (1 + np.exp(-h * 10))  # Sigmoid output
     return out[0]
 
 # SFR Bases
 def md14_sfr(z, phi0=0.01, alpha_low=-0.3, alpha_high=-3.5, beta=1.5):
-    try:
-        return phi0 * (1 + z)**alpha_low / ((1 + z)**alpha_low + (1 + z)**alpha_high)**beta
-    except:
-        return 0.01 * np.exp(-z / 1.5)  # Fallback
+    return phi0 * (1 + z)**alpha_low / ((1 + z)**alpha_low + (1 + z)**alpha_high)**beta
 
 def lognormal_rising_sfr(z, phi0=0.01, mu=0.64, sigma=0.5, gamma=0.5, z0=1.5):
-    try:
-        if z == 0:
-            z = 1e-6
-        lognorm = phi0 / (z * sigma * np.sqrt(2 * np.pi)) * np.exp( - (np.log(z) - mu)**2 / (2 * sigma**2) )
-        rising = (1 + z)**gamma * np.exp(-z / z0)
-        return lognorm * rising
-    except:
-        return 0.01 * np.exp(-z / 1.5)  # Fallback
+    if z == 0:
+        z = 1e-6
+    lognorm = phi0 / (z * sigma * np.sqrt(2 * np.pi)) * np.exp( - (np.log(z) - mu)**2 / (2 * sigma**2) )
+    rising = (1 + z)**gamma * np.exp(-z / z0)
+    return lognorm * rising
 
 def psi_z(z, sfr_type='Lognormal + Rising Hybrid'):
-    try:
-        if TORCH_AVAILABLE:
-            z_torch = torch.tensor(np.array([z]).reshape(-1, 1), dtype=torch.float32)
-            uplift = sfr_mlp(z_torch).detach().numpy().flatten()[0]
-        else:
-            uplift = numpy_mlp(z)
-        uplift_factor = 1.0 + 0.5 * uplift  # [1.0, 1.5]
-        if sfr_type == 'MD14 Double Power-Law':
-            base = md14_sfr(z)
-        else:
-            base = lognormal_rising_sfr(z)
-        return base * uplift_factor
-    except Exception as e:
-        st.error(f"psi_z error: {e}")
-        return 0.01 * np.exp(-z / 1.5)  # Fallback
+    uplift = numpy_mlp(z)
+    uplift_factor = 1.0 + 0.5 * uplift  # [1.0, 1.5]
+    if sfr_type == 'MD14 Double Power-Law':
+        base = md14_sfr(z)
+    else:
+        base = lognormal_rising_sfr(z)
+    return base * uplift_factor
 
 # Full MC Function
 @st.cache_data
 def drake_mc(z_max, n_samples, epsilon_waste, k_max, sfr_base):
-    try:
-        z_bins = np.linspace(0.05, z_max, 20)
-        n_z = np.zeros(len(z_bins))
-        K_cap = 10**(10 * k_max + 6)  # P_tot proxy
-        for i, z in enumerate(z_bins):
-            t_star = 10.0 - z * 8.0  # Toy Gyr lookback
-            psi = psi_z(z, sfr_base) * n_samples
-            B = B_hardsteps(t_star)
-            C = C_birthdeath(t_star, K_cap=K_cap)
-            p_det = epsilon_waste / (1 + z)**4 * np.random.uniform(0.01, 0.1, n_samples).mean()
-            n_z[i] = psi * B * C * p_det
-        total_n = np.sum(n_z)
-        df = pd.DataFrame({'z': z_bins, 'N_z': n_z, 'Total N': total_n})
-        return df, total_n
-    except Exception as e:
-        st.error(f"MC error: {e}")
-        return pd.DataFrame(), 0.0
+    z_bins = np.linspace(0.05, z_max, 20)
+    n_z = np.zeros(len(z_bins))
+    K_cap = 10**(10 * k_max + 6)  # P_tot proxy
+    for i, z in enumerate(z_bins):
+        t_star = 10.0 - z * 8.0  # Toy Gyr lookback
+        psi = psi_z(z, sfr_base) * n_samples
+        B = B_hardsteps(t_star)
+        C = C_birthdeath(t_star, K_cap=K_cap)
+        p_det = epsilon_waste / (1 + z)**4 * np.random.uniform(0.01, 0.1, n_samples).mean()
+        n_z[i] = psi * B * C * p_det
+    total_n = np.sum(n_z)
+    df = pd.DataFrame({'z': z_bins, 'N_z': n_z, 'Total N': total_n})
+    return df, total_n
 
 # Main App Logic
 if run_button or chat_prompt:
