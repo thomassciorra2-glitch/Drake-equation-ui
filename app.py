@@ -1,7 +1,5 @@
 import streamlit as st
 import numpy as np
-import math
-from scipy.integrate import cumtrapz, odeint
 import pandas as pd
 import plotly.express as px
 from io import BytesIO
@@ -35,28 +33,28 @@ def dc_comoving(z, steps=1024):
     return (c / H0) * np.trapz(integrand, zgrid)
 def dL(z): return (1+z) * dc_comoving(z)
 
-# Hard-Steps Bio
+# Hard-Steps Bio (Riemann sum approx)
 def B_hardsteps(t_star, r0=0.1, tau=0.05, alpha=2):
     if np.isscalar(t_star):
         t_star = np.array([t_star])
-    t_grid = np.linspace(0, t_star.max(), 100)
+    dt = 0.01
+    t_grid = np.arange(0, t_star.max() + dt, dt)
     lambda_chem = r0 * t_grid / (1 + (t_grid / tau)**alpha)
-    integral = cumtrapz(lambda_chem, t_grid, initial=0)
+    integral = np.cumsum(lambda_chem * dt)
     B_interp = np.interp(t_star, t_grid, integral)
     B = 1 - np.exp(-B_interp)
     return B.mean() if len(B) > 1 else B[0]
 
-# Birth-Death Cultural
+# Birth-Death Cultural (Analytical logistic approx)
 def C_birthdeath(t_star, b=0.05, d=0.03, K_cap=1e16):
-    if np.isscalar(t_star):
-        t_star = np.array([t_star])
-    def ode(y, t):
-        return b * y - d * y**2 / K_cap
-    y0 = 1.0
-    sol = odeint(ode, y0, t_star)
-    return sol[:, 0].mean() / K_cap
+    r = b - d
+    if r <= 0:
+        return 0.0
+    N0 = 1.0
+    N = K_cap / (1 + (K_cap / N0 - 1) * np.exp(-r * t_star))
+    return N.mean() / K_cap
 
-# NumPy MLP Fallback
+# NumPy MLP
 def numpy_mlp(z):
     x = np.array([z])
     h = 1 / (1 + np.exp(- (x - 0.5) * 10))
