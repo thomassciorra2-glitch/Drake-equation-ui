@@ -1,6 +1,6 @@
 import streamlit as st
 import numpy as np
-import math  # ← FIX 1: Added missing import
+import math  # FIX 1: Added missing import for sqrt
 from scipy.integrate import cumtrapz, odeint
 import pandas as pd
 import plotly.express as px
@@ -28,7 +28,7 @@ H0 = 70.0 * 1000.0 / 3.085677581e22
 Om0, Ol0 = 0.3, 0.7
 c = 299792458.0
 
-def Ez(z): return math.sqrt(Om0*(1+z)**3 + Ol0)
+def Ez(z): return math.sqrt(Om0*(1+z)**3 + Ol0)  # Now uses math.sqrt
 def dc_comoving(z, steps=1024):
     zgrid = np.linspace(0.0, z, steps)
     integrand = 1.0 / np.array([Ez(zz) for zz in zgrid])
@@ -56,7 +56,7 @@ def C_birthdeath(t_star, b=0.05, d=0.03, K_cap=1e16):
     sol = odeint(ode, y0, t_star)
     return sol[:, 0].mean() / K_cap
 
-# NumPy MLP (FIX 2: Simple scalar, no array waste)
+# NumPy MLP (FIX 2: Scalar only, no array waste)
 def numpy_mlp(z):
     x = np.array([z])
     h = 1 / (1 + np.exp(- (x - 0.5) * 10))
@@ -83,7 +83,7 @@ def psi_z(z, sfr_type='Lognormal + Rising Hybrid'):
         base = lognormal_rising_sfr(z)
     return base * uplift_factor
 
-# Full MC Function (FIX 3: @st.cache_resource for MLP, scalar random)
+# Full MC Function (FIX 3: @st.cache_data with params for invalidation, scalar random)
 @st.cache_data
 def drake_mc(z_max, n_samples, epsilon_waste, k_max, sfr_base):
     z_bins = np.linspace(0.05, z_max, 20)
@@ -94,7 +94,7 @@ def drake_mc(z_max, n_samples, epsilon_waste, k_max, sfr_base):
         psi = psi_z(z, sfr_base) * n_samples
         B = B_hardsteps(t_star)
         C = C_birthdeath(t_star, K_cap=K_cap)
-        p_det = epsilon_waste / (1 + z)**4 * np.random.uniform(0.01, 0.1, size=1).mean()  # FIX: Scalar, no array
+        p_det = epsilon_waste / (1 + z)**4 * np.random.uniform(0.01, 0.1, size=1).mean()  # FIX: Scalar size=1
         n_z[i] = psi * B * C * p_det
     total_n = np.sum(n_z)
     df = pd.DataFrame({'z': z_bins, 'N_z': n_z, 'Total N': total_n})
