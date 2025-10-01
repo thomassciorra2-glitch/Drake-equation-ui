@@ -1,7 +1,6 @@
 import streamlit as st
 import numpy as np
-import math  # FIX 1: Added missing import for sqrt
-from scipy.integrate import cumtrapz, odeint
+import math
 import pandas as pd
 import plotly.express as px
 from io import BytesIO
@@ -28,35 +27,34 @@ H0 = 70.0 * 1000.0 / 3.085677581e22
 Om0, Ol0 = 0.3, 0.7
 c = 299792458.0
 
-def Ez(z): return math.sqrt(Om0*(1+z)**3 + Ol0)  # Now uses math.sqrt
+def Ez(z): return math.sqrt(Om0*(1+z)**3 + Ol0)
 def dc_comoving(z, steps=1024):
     zgrid = np.linspace(0.0, z, steps)
-    integrand = 1.0 / np.array([Ez(zz) for zz in zgrid])
+    integrand = 1.0 / Ez(zgrid)
     return (c / H0) * np.trapz(integrand, zgrid)
 def dL(z): return (1+z) * dc_comoving(z)
 
-# Hard-Steps Bio
+# Hard-Steps Bio (Riemann sum approx—no SciPy)
 def B_hardsteps(t_star, r0=0.1, tau=0.05, alpha=2):
     if np.isscalar(t_star):
         t_star = np.array([t_star])
-    t_grid = np.linspace(0, t_star.max(), 100)
+    dt = 0.01
+    t_grid = np.arange(0, t_star.max() + dt, dt)
     lambda_chem = r0 * t_grid / (1 + (t_grid / tau)**alpha)
-    integral = cumtrapz(lambda_chem, t_grid, initial=0)
+    integral = np.cumsum(lambda_chem * dt)
     B_interp = np.interp(t_star, t_grid, integral)
     B = 1 - np.exp(-B_interp)
     return B.mean() if len(B) > 1 else B[0]
 
-# Birth-Death Cultural
+# Birth-Death Cultural (Analytical—no odeint)
 def C_birthdeath(t_star, b=0.05, d=0.03, K_cap=1e16):
-    if np.isscalar(t_star):
-        t_star = np.array([t_star])
-    def ode(y, t):
-        return b * y - d * y**2 / K_cap
-    y0 = 1.0
-    sol = odeint(ode, y0, t_star)
-    return sol[:, 0].mean() / K_cap
+    r = b - d
+    if r <= 0: return 0.0
+    N0 = 1.0
+    N = K_cap / (1 + (K_cap/N0 - 1)*np.exp(-r*np.asarray(t_star)))
+    return (N/K_cap).mean()
 
-# NumPy MLP (FIX 2: Scalar only, no array waste)
+# NumPy MLP
 def numpy_mlp(z):
     x = np.array([z])
     h = 1 / (1 + np.exp(- (x - 0.5) * 10))
@@ -83,7 +81,7 @@ def psi_z(z, sfr_type='Lognormal + Rising Hybrid'):
         base = lognormal_rising_sfr(z)
     return base * uplift_factor
 
-# Full MC Function (FIX 3: @st.cache_data with params for invalidation, scalar random)
+# Full MC Function
 @st.cache_data
 def drake_mc(z_max, n_samples, epsilon_waste, k_max, sfr_base):
     z_bins = np.linspace(0.05, z_max, 20)
@@ -94,7 +92,7 @@ def drake_mc(z_max, n_samples, epsilon_waste, k_max, sfr_base):
         psi = psi_z(z, sfr_base) * n_samples
         B = B_hardsteps(t_star)
         C = C_birthdeath(t_star, K_cap=K_cap)
-        p_det = epsilon_waste / (1 + z)**4 * np.random.uniform(0.01, 0.1, size=1).mean()  # FIX: Scalar size=1
+        p_det = epsilon_waste / (1 + z)**4 * np.random.uniform(0.01, 0.1, size=1).mean()
         n_z[i] = psi * B * C * p_det
     total_n = np.sum(n_z)
     df = pd.DataFrame({'z': z_bins, 'N_z': n_z, 'Total N': total_n})
