@@ -51,10 +51,10 @@ For defaults (z_max=2.0, ε=0.05, n=500):
 MIT—see [LICENSE](LICENSE). Free for research/education.
 
 ## Citation
-[Your Name]. (2025). Extended Drake–Information Equation UI. GitHub. https://github.com/thomass2glitch/drake-equation-ui
+[John Sciorra]. (2025). Extended Drake–Information Equation UI. GitHub. https://github.com/thomass2glitch/drake-equation-ui
 
 ## Contributing
 Fork, PR, or open issues. Feedback on kernels/SFR fusion welcome.
 
 ## Contact
-thomass2glitch@... or issues tab.
+thomassciorra2@gmail.com... or issues tab.
